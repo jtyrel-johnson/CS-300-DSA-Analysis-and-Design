@@ -197,14 +197,16 @@ string trim(const string& str) {
 * This function normalizes a course ID by trimming whitespace, removing internal spaces, 
 * and converting to uppercase.
 */
-string normalizeCourseId(string s) {
-    s = trim(s);
+string normalizeCourseId(const string& s) { // avoids copying string additional time when calling method, since we are copying it in trim
+    string trimmed = trim(s);
 
     // remove internal spaces
     string cleaned;
-    for (char ch : s) {
-        if (!isspace(static_cast<unsigned char>(ch))) {
-			cleaned += static_cast<char>(toupper(static_cast<unsigned char>(ch)));  // convert to uppercase
+    cleaned.reserve(trimmed.size()); // allocates space upfront
+    for (char ch : trimmed) {
+        unsigned char uch = static_cast<unsigned char>(ch); // only call cast once then pass as var
+        if (!isspace(uch)) {
+			cleaned += static_cast<char>(toupper(uch));  // convert to uppercase
         }
     }
     return cleaned;
@@ -233,92 +235,114 @@ vector<string> split(const string& s, char delimiter) {
 }
 
 /**
-* This function loads courses from a CSV file into the provided CourseBST. 
-* It performs validation to ensure that: 
-* - Each line has at least a course ID and name
-* - Course IDs are unique
-* - Prereqs reference valid course IDs
+* This function parses a CSV line into tokens and validates that it has at least 2 fields.
 */
-bool loadCourses(const string& csvPath, CourseBST& outBst) {
-	set<string> courseNumbers;
-	ifstream file(csvPath);
-    
-	// Check if the file was opened successfully
-	if (!file.is_open()) {
+// Being super nit-picky here and pulling this code out since it is repeated twice (DRY principles)
+bool parseLine(const string& line, vector<string>& tokens) {
+    tokens = split(line, ',');
+    if (tokens.size() < 2) {
+        cerr << "Invalid line format: " << line << endl;
+        return false;
+    }
+    return true;
+}
+
+/**
+* This function validates the CSV file format and collects all course IDs into a set.
+* It ensures each line has a course ID and name, no duplicates exist, and IDs are non-empty.
+*/
+bool validateCourseFile(const string& csvPath, set<string>& courseNumbers) {
+    ifstream file(csvPath);
+
+    if (!file.is_open()) {
         cerr << "Error opening file: " << csvPath << endl;
         return false;
     }
 
-	string line;
+    string line;
 
-	// First pass: Validate the file format and collect course IDs
     while (getline(file, line)) {
-		vector<string> tokens = split(line, ',');
+        vector<string> tokens;
+        if (!parseLine(line, tokens)) return false;
 
-		// Validate that the line has at least a course ID and name
-        if (tokens.size() < 2) {
-            cerr << "Invalid line format: " << line << endl;
-            return false;
-        }
-
-		// Normalize the course ID and extract the course name
+        // Normalize the course ID and extract the course name
         string courseId = normalizeCourseId(tokens[0]);
         string courseName = tokens[1];
 
-		// Validate that the course ID and name are not empty
+        // Validate that the course ID and name are not empty
         if (courseId.empty() || courseName.empty()) {
             cerr << "Missing course ID or name: " << line << endl;
             return false;
         }
 
-		// Check for duplicate course IDs
+        // Check for duplicate course IDs
         if (courseNumbers.find(courseId) != courseNumbers.end()) {
             cerr << "Duplicate course ID found: " << courseId << endl;
             return false;
         }
 
-		courseNumbers.insert(courseId);
+        courseNumbers.insert(courseId);
     }
 
-	// Reset file stream to the beginning for second pass to build the tree
-	file.clear();
-    file.seekg(0);
+    return true;
+}
 
-	// Second pass: Build the CourseBST with validated data
+/**
+* This function builds the CourseBST from a validated CSV file using the set of known course IDs.
+*/
+bool buildCourseTree(const string& csvPath, const set<string>& courseNumbers, CourseBST& outBst) {
+    ifstream file(csvPath);
+
+    if (!file.is_open()) {
+        cerr << "Error opening file: " << csvPath << endl;
+        return false;
+    }
+
+    string line;
+
     while (getline(file, line)) {
-        vector<string> tokens = split(line, ',');
-        
-        if (tokens.size() < 2) {
-            cerr << "Invalid line format: " << line << endl;
-            return false;
-        }
+        vector<string> tokens;
+        if (!parseLine(line, tokens)) return false;
 
-		Course newCourse;
+        Course newCourse;
         newCourse.courseId = normalizeCourseId(tokens[0]);
         newCourse.courseName = tokens[1];
-        
-		// Process prereqs starting from the third token (index 2)
+
+        // Process prereqs starting from the third token (index 2)
         for (size_t i = 2; i < tokens.size(); i++) {
             string preReq = normalizeCourseId(tokens[i]);
 
-			// Validate that the prereq is not empty and exists in the set of course IDs
+            // Validate that the prereq is not empty and exists in the set of course IDs
             if (preReq.empty()) {
-                continue; 
+                continue;
             }
 
             if (courseNumbers.find(preReq) == courseNumbers.end()) {
-                cerr << "Prerequisite course not found: " << preReq 
+                cerr << "Prerequisite course not found: " << preReq
                     << " for course: " << newCourse.courseId << endl;
                 return false;
             }
 
-			newCourse.preReqs.push_back(preReq);
+            newCourse.preReqs.push_back(preReq);
         }
-        
-		outBst.Insert(newCourse);
+
+        outBst.Insert(newCourse);
     }
 
     return true;
+}
+
+/**
+* This function loads courses from a CSV file into the provided CourseBST.
+* It performs validation to ensure that:
+* - Each line has at least a course ID and name
+* - Course IDs are unique
+* - Prereqs reference valid course IDs
+*/
+bool loadCourses(const string& csvPath, CourseBST& outBst) {
+    set<string> courseNumbers;
+    if (!validateCourseFile(csvPath, courseNumbers)) return false; // Pulled logic for validating into one method
+    return buildCourseTree(csvPath, courseNumbers, outBst); // And then build courseTree into antoher method
 }
 
 /**
@@ -334,15 +358,15 @@ void printCourse(const Course& course) {
 	
     else {
         for (size_t i = 0; i < course.preReqs.size(); ++i) {
-            cout << course.preReqs[i];
-            if (i + 1 < course.preReqs.size()) {
-                cout << ", ";
+            if (i > 0) {
+                cout << ", "; // just *slightly* easier to read
             }
+            cout << course.preReqs[i];
         }
         cout << endl;
     }
     cout << endl;
-	}
+}
 
 /**
 * This function looks up a course by ID in the CourseBST and prints its information if found.
@@ -389,14 +413,15 @@ int main() {
 		// Process the user's menu choice
         switch (choice) {
         case 1:
-            cout << "Enter file name: ";
-            cin >> filePath;
-
 			// Prevent loading courses multiple times without restarting the program
             if (loaded) {
                 cout << "Courses already loaded. Restart program to load a different file.\n";
-				break;
+                break;
             }
+
+            cout << "Enter file name: ";
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+            getline(cin, filePath);
 
 			// Load courses from the specified file path and update the loaded flag accordingly
             if (loadCourses(filePath, bst)) {
